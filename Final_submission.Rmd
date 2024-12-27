@@ -1,0 +1,515 @@
+---
+title: "Airbnb_final"
+author: "Prabhu Shankar"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+# Reading data 
+
+```{r}
+library(scales)
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(RColorBrewer)
+library(ggcorrplot)
+library(forecast)
+
+# Load dataset
+DO_NOT_TOUCH <- read.csv('/Users/prabhushankar/Desktop/Data mining/Project/data_set_1.csv')
+```
+
+
+
+# NA value check
+
+
+
+```{r}
+data_na_check <- DO_NOT_TOUCH
+
+data_na_check$log_price <- log(data_na_check$price)
+data_na_check[data_na_check == ""] <- NA
+
+na_counts <- colSums(is.na(data_na_check))
+na_percentage <- percent(na_counts / nrow(data_na_check), accuracy = 0.01)
+na_summary <- data.frame(Variable = names(na_counts), NA_Counts = na_counts, NA_Percent = na_percentage)
+
+na_summary
+
+data_na_check <- data_na_check %>%
+  mutate(amenities_list = strsplit(amenities, ","), amenities_count = lengths(amenities_list)) %>%
+  select(-amenities_list, -amenities)
+
+data_na_check <- data_na_check[, c( "property_type", "room_type", 
+                 "accommodates", "bedrooms", "price", 
+                 "instant_bookable", "host_has_profile_pic", "host_identity_verified", 
+                 "minimum_nights", "maximum_nights","city", "amenities_count", "log_price")]
+
+data_na_check <- na.omit(data_na_check)
+```
+
+
+# A linear regression analysis was conducted using the dataset after omitting entries with missing (NA) values. This approach allowed us to identify significant variables without the influence of incomplete data. The insights from this analysis will guide the imputation process for the missing values, ensuring that only the most impactful variables are considered.   
+
+
+```{r}
+data_na_check <- data_na_check %>%
+  mutate(
+    room_type = as.factor(room_type),
+    instant_bookable = as.factor(instant_bookable),
+    host_has_profile_pic = as.factor(host_has_profile_pic),
+    host_identity_verified = as.factor(host_identity_verified),
+    city = as.factor(city),
+  )
+
+summary(linear_model <- lm(log_price ~ . - property_type - price, data_na_check))
+```
+
+
+
+
+
+
+
+# We are running a Random Forest model to evaluate whether missing (NA) values for key variables can be reliably imputed using regression, based on the relationships between other significant variables in the dataset.
+
+```{r}
+
+
+set.seed(123)  # Set seed for reproducibility
+
+# Create a random sample of row indices for the training set
+train_indices_random_forest <- sample(1:nrow(data_na_check), size = 0.8 * nrow(data_na_check))
+
+# Split the data
+train_set_random_forest <- data_na_check[train_indices_random_forest, ]  # 80%
+test_set_random_forest <- data_na_check[-train_indices_random_forest, ]  # 20%
+library(randomForest)
+
+model.rf = randomForest(log_price ~ . - price - amenities_count - property_type, data = train_set_random_forest, ntree=50,
+nodesize=25, importance = TRUE)
+
+
+
+
+library(caret)
+
+predict_class.rf_model = predict(model.rf, newdata = test_set_random_forest)
+predict_class.rf_model <- factor(predict_class.rf_model)
+test_set_random_forest$price <- factor(test_set_random_forest$price)
+predict_class.rf_model <- factor(predict_class.rf_model, levels = levels(test_set_random_forest$price))
+
+#confusionMatrix(data = predict_class.rf, reference = test_set$price)
+varImpPlot(model.rf, type = 1)
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Data Cleaning and preprocessing.
+
+```{r}
+data <- DO_NOT_TOUCH[, c("room_type", 
+                 "accommodates", "bedrooms", "amenities", "price", 
+                 "instant_bookable", "host_has_profile_pic", "host_identity_verified", 
+                 "minimum_nights", "maximum_nights","city")]
+
+data$log_price <- log(data$price)
+data[data == ""] <- NA
+  
+na_counts <- colSums(is.na(data))
+na_percentage <- percent(na_counts / nrow(data), accuracy = 0.01)
+na_summary <- data.frame(Variable = names(na_counts), NA_Counts = na_counts, NA_Percent = na_percentage)
+
+na_summary
+
+
+
+data$host_has_profile_pic <- ifelse(data$host_has_profile_pic == 'f', "False", "True")
+
+data$instant_bookable <- ifelse(data$instant_bookable == 'f', "False", "True")
+
+data$host_identity_verified <- ifelse(data$host_identity_verified == 'f', "False", "True")
+
+
+
+data$bedrooms[is.na(data$bedrooms)] <- 1
+
+cleaned_data <- na.omit(data)
+
+
+cleaned_data <- cleaned_data %>%
+  mutate(amenities_list = strsplit(amenities, ","), amenities_count = lengths(amenities_list)) %>% select(-amenities_list, -amenities)
+
+cleaned_data <- cleaned_data %>%
+  filter(log_price > 0, accommodates > 0, bedrooms > 0)
+
+```
+
+
+
+# Outlier detection and EDA
+
+
+
+```{r}
+# Separate numeric and categorical variables for analysis
+numeric_vars <- cleaned_data[, sapply(cleaned_data, is.numeric)]
+categorical_vars <- cleaned_data[, !(names(cleaned_data) %in% names(numeric_vars))]
+numeric_vars <- subset(numeric_vars)
+summary(numeric_vars)
+apply(numeric_vars, 2, sd)
+
+
+# Calculate interquartile range and variance
+apply(numeric_vars, 2, IQR)
+apply(numeric_vars, 2, var)
+
+
+# Generate a correlation matrix for numeric variables
+correlation_matrix <- round(cor(numeric_vars), 2)
+correlation_matrix
+
+# Boxplot of maximum_nights
+
+ggplot(cleaned_data, aes(y = maximum_nights)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of Maximum Nights") +
+  theme_minimal()
+```
+
+
+Looking at the box plot, there are extreme outliers in the maximum nights.
+
+
+
+```{r}
+ggplot(cleaned_data, aes(y = minimum_nights)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of Minimum Nights") +
+  theme_minimal()
+```
+
+
+Minimum nights have outliers too
+
+
+The below is a line plot of the same graph to understand the outliers.
+
+
+
+
+```{r}
+# Transform maximum_nights to log scale and plot it
+cleaned_data$log_max_nights <- log(cleaned_data$maximum_nights)
+colors <- ifelse(cleaned_data$log_max_nights < 15, "green", "red")
+
+plot(cleaned_data$log_max_nights, cleaned_data$log_max_nights,
+     main = "Maximum Nights on Log Scale",
+     xlab = "Log of Max Nights",
+     ylab = "Count",
+     col = colors,
+     pch = 16)
+```
+
+
+We compute the same chart for ameneties and number of bedrooms
+
+
+
+
+```{r}
+# Boxplot of bedrooms and amenities
+ggplot(cleaned_data, aes(y = bedrooms)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of Bedrooms") +
+  theme_minimal()
+
+ggplot(cleaned_data, aes(y = amenities_count)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of Amenities Count") +
+  theme_minimal()
+
+```
+
+# Correlation matrix
+
+```{r}
+correlation_matrix <- round(cor(numeric_vars), 2)
+correlation_matrix
+ggcorrplot(correlation_matrix, lab = TRUE, title = "Correlation Matrix")
+```
+
+
+# Interquartile cleaning and removal of outliers. 
+
+
+```{r}
+
+q1_accom <- quantile(cleaned_data$accommodates, 0.25)
+q3_accom <- quantile(cleaned_data$accommodates, 0.75)
+iqr_accom <- q3_accom - q1_accom
+lower_accom <- q1_accom - 1.5 * iqr_accom
+upper_accom <- q3_accom + 1.5 * iqr_accom
+
+
+
+q1_bedrooms <- quantile(cleaned_data$bedrooms, 0.25)
+q3_bedrooms <- quantile(cleaned_data$bedrooms, 0.75)
+iqr_bedrooms <- q3_bedrooms - q1_bedrooms
+lower_bedroom <- q1_bedrooms - 1.5 * iqr_bedrooms
+upper_bedroom <- q3_bedrooms + 1.5 * iqr_bedrooms
+
+
+
+q1_minimum_nights <- quantile(cleaned_data$minimum_nights, 0.25) 
+q3_minimum_nights <- quantile(cleaned_data$minimum_nights, 0.75) 
+iqr_minimum_nights <- q3_minimum_nights - q1_minimum_nights 
+lower_min_night <- q1_minimum_nights - 1.5 * iqr_minimum_nights 
+upper_min_night <- q3_minimum_nights + 1.5 * iqr_minimum_nights
+
+
+
+q1_maximum_nights <- quantile(cleaned_data$maximum_nights, 0.25) 
+q3_maximum_nights <- quantile(cleaned_data$maximum_nights, 0.75) 
+iqr_maximum_nights <- q3_maximum_nights - q1_maximum_nights 
+lower_max_night <- q1_maximum_nights - 1.5 * iqr_maximum_nights 
+upper_max_night <- q3_maximum_nights + 1.5 * iqr_maximum_nights
+
+
+
+
+cleaned_data <- cleaned_data %>%
+  filter(accommodates >= lower_accom & accommodates <= upper_accom)
+
+cleaned_data <- cleaned_data %>%
+  filter(minimum_nights >= lower_min_night & minimum_nights <= upper_min_night)
+
+cleaned_data <- cleaned_data %>%
+  filter(q1_maximum_nights >= lower_max_night & q1_maximum_nights <= upper_max_night)
+
+
+
+
+cleaned_data <- cleaned_data[cleaned_data$maximum_nights < 1500, ]
+
+cleaned_data <- cleaned_data %>%
+  mutate(
+    room_type = as.factor(room_type),
+    instant_bookable = as.factor(instant_bookable),
+    host_has_profile_pic = as.factor(host_has_profile_pic),
+    host_identity_verified = as.factor(host_identity_verified),
+    city = as.factor(city)
+  )
+
+
+```
+
+
+
+Looking at the accommodation and average log price. There appears to be a increase in price as the accommodation increases.
+
+```{r}
+avg_log_price <- cleaned_data %>%
+  group_by(accommodates) %>%
+  summarise(mean_log_price = mean(log_price, na.rm = TRUE))
+# Line graph for accommodation capacity vs. average log price
+ggplot(avg_log_price, aes(x = accommodates, y = mean_log_price)) +
+  geom_line(color = "blue", size = 1) +
+  geom_point(color = "blue", size = 2) +  # Adding points to highlight each accommodates level
+  labs(
+    title = "Accommodation Capacity vs. Average Log Price",
+    x = "Accommodates",
+    y = "Average Log Price"
+  ) +
+  theme_minimal()
+```
+
+
+
+
+
+
+
+
+
+We see the count of the property is a lot more in and around 500 dollars as this is a log of price and we should convert it into ln to get back the price. And most of the properties hover around 500 dollars.
+
+```{r}
+# Plotting histogram for the count of log price
+ggplot(cleaned_data, aes(x = log_price)) +
+  geom_histogram(binwidth = 0.5, fill = "blue", color = "black") +
+  labs(
+    title = "Distribution of Log Price",
+    x = "Log Price",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+
+
+
+
+
+
+# Splitting the dataset
+
+
+```{r}
+set.seed(123)
+# Create a random sample of row indices for the training set
+train_indices1 <- sample(1:nrow(cleaned_data), size = 0.8 * nrow(cleaned_data))
+
+# Split the data
+train_set1 <- cleaned_data[train_indices1, ]  # 80%
+test_set1 <- cleaned_data[-train_indices1, ]  # 20%
+```
+
+
+
+
+
+# Linear model with all the significant variables
+
+
+```{r}
+model_lm <- lm(log_price ~ . - price - amenities_count - log_max_nights, data = train_set1 )
+
+summary(model_lm)
+
+
+
+# Remove rows where the column contains 42 or 46 as the factor will affect testing the 
+#test_data2 <- test_set1 %>%
+ # filter(!(bedrooms %in% c(42, 46, 18, 38)))
+
+
+predicted_values <- predict(model_lm, newdata = test_set1)
+
+
+accuracy(model_lm$fitted.values, test_set1$log_price)
+
+```
+
+# step wise model
+
+
+```{r}
+
+
+# Apply stepwise selection
+model_stepwise <- step(model_lm, direction = "both")
+
+# Model summary and accuracy evaluation
+summary(model_stepwise)
+#accuracy(model_stepwise$fitted.values, test_set1$log_price)
+predicted_values1 <- predict(model_stepwise, newdata = test_set1)
+
+accuracy(predicted_values1, test_set1$log_price)
+
+```
+
+
+# Model without instant bookable and host_identity_verified and host_has_profile_pic
+
+
+```{r}
+
+model_lm111 <- lm(log_price ~ .- price - amenities_count - log_max_nights - instant_bookable - host_identity_verified - host_has_profile_pic, data = train_set1 )
+
+summary(model_lm111)
+
+
+accuracy(model_lm111$fitted.values, test_set1$log_price)
+
+```
+
+
+
+# Baseline
+
+
+```{r}
+predictions = predict(model_lm111, newdata=test_set1)
+
+#compute common accuracy measures for the model
+library(forecast)
+accuracy(predictions, test_set1$log_price)
+
+
+# Calculate the baseline predictions (average prediction)dataset
+mean_rating_train = mean(test_set1$log_price)
+baseline_predictions = rep(mean_rating_train, length(predictions))
+
+
+accuracy(baseline_predictions, test_set1$log_price)
+
+```
+
+# Random forest
+
+
+```{r}
+library(randomForest)
+model.rf = randomForest(log_price ~ .- price - amenities_count - log_max_nights - instant_bookable, data = train_set1, ntree=20,
+nodesize=25, importance = TRUE)
+
+
+library(caret)
+
+predict_class.rf = predict(model.rf, newdata = test_set1)
+predict_class.rf <- factor(predict_class.rf)
+#test_set1$log_price <- factor(test_set1$log_price)
+predict_class.rf <- factor(predict_class.rf, levels = levels(test_set1$log_price))
+
+predicted_values <- predict(model.rf, newdata = test_set1)
+actual_values <- test_set1$log_price
+library(Metrics)
+#rmse(actual_values, predicted_values)
+
+ME <- mean(actual_values - predicted_values)
+
+RMSE <- sqrt(mean((actual_values - predicted_values)^2))
+
+MAE <- mean(abs(actual_values - predicted_values))
+
+MPE <- mean((actual_values - predicted_values) / actual_values) * 100
+
+
+MAPE <- mean(abs((actual_values - predicted_values) / actual_values)) * 100
+
+```
+
+```{r}
+ME
+RMSE
+MAE
+MPE
+MAPE
+```
+
+
+
+
